@@ -112,7 +112,8 @@ vcfR::write.vcf(filtered_vcf, "output/Oyster_hybrids_filtered_vcf_informloci.vcf
 
 #PCA
 #Convert to a genind object
-filtered_vcf <- read.vcfR("output/Oyster_hybrids_filtered_vcf_informloci.vcf.gz")
+filtered_vcf <- read.vcfR("output/Oyster_hybrids_filtered_vcf_informloci.vcf.gz", 
+                          verbose = FALSE)
 gen <- vcfR2genind(filtered_vcf)
 allelfreq <- scaleGen(gen, NA.method="mean", scale=TRUE)
 

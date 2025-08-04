@@ -1,5 +1,5 @@
 ---
-title: "Nanopore DNA Sequencing and Hybrid Identification of Oysters"
+title: "Nanopore DNA Sequencing and analysis for identification of oyster hybrids"
 author: "Ido Bar & Sheira Bar-Gafni"
 date: "`r format(Sys.Date(),  '%d %b %Y')`"
 always_allow_html: yes
@@ -509,12 +509,13 @@ write.vcf(filtered_vcf, "output/Oyster_hybrids_filtered_vcf_informloci.vcf.gz")
 ```
 
 
-The filtered SNPs were converted to a `genind` format for principal component analysis (PCA) using *adegenet* v`r packageVersion("adegenet")` and were visualised using *ggplot2* v`r packageVersion("ggplot2")` and *paletteer* v`r packageVersion("paletteer")`
+The filtered SNPs were converted to a `genind` format for principal component analysis (PCA) using *adegenet* v`r packageVersion("adegenet")` [@jombartAdegenetPackageMultivariate2008; @lshtmdr1765; @jombartAdegenet31New2011] and were visualised using *ggplot2* v`r packageVersion("ggplot2")` and *paletteer* v`r packageVersion("paletteer")`
 
-```{r pca, eval=TRUE}
+```{r pca, eval=TRUE, fig.cap="Principal component analysis based on 158 informative SNP loci in 11 oyster samples"}
 #PCA
 #Convert to a genind object
-filtered_vcf <- read.vcfR("output/Oyster_hybrids_filtered_vcf_informloci.vcf.gz")
+filtered_vcf <- read.vcfR("output/Oyster_hybrids_filtered_vcf_informloci.vcf.gz", 
+                          verbose = FALSE)
 vcf_samples <- colnames(filtered_vcf@gt)[-1]
 popmap <- tibble(
   id = vcf_samples,
