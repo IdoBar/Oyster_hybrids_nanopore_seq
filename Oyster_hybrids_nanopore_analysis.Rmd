@@ -1,0 +1,557 @@
+---
+title: "Nanopore DNA Sequencing and Hybrid Identification of Oysters"
+author: "Ido Bar & Sheira Bar-Gafni"
+date: "`r format(Sys.Date(),  '%d %b %Y')`"
+always_allow_html: yes
+output: 
+    rmdformats::readthedown:
+   # rmdformats::downcute:
+      # downcute_theme: "chaos"
+   # bookdown::html_document2:
+      use_bookdown: true
+      self_contained: true
+      includes:
+       in_header: style/header.html
+       after_body: style/external-links-js.html
+      highlight: pygments
+      #css: "style/style.css"
+      # toc: true
+      # toc_float: true
+      toc_depth: 4
+  #    highlight: pygments
+      number_sections: true
+      code_folding: hide
+#      keep_md: true
+# bibliography: [style/ONT_QC.bib, style/ONT.bib,style/ONT_var.bib, style/DNA_extraction_methods.bib, style/ONT_refs.bib]
+bibliography: "`r rbbt::bbt_write_bib('style/ONT_refs.json', overwrite = TRUE)`"
+csl: style/springer-basic-improved-author-date-with-italic-et-al-period.csl
+---
+
+```{r setup, include=FALSE}
+devtools::source_gist("7f63547158ecdbacf31b54a58af0d1cc", filename = "util.R")
+knitr::opts_chunk$set(list(echo = TRUE, eval=FALSE, message=FALSE))
+# install recommended RStudio addins
+# pak::pak(rstudio_addins)
+my_packages <- c('tidyverse', 'janitor', 'bookdown', 'rmdformats',
+                 "paletteer", "glue","scales",
+                   "vcfR","adegenet", "poppr")
+# pak::pak(my_packages)
+pacman::p_load(char = basename(my_packages), install = FALSE, update = FALSE)
+```
+
+# Experimental Design
+
+## Aims
+
+-  Identify potential hybrid oysters from crosses between Sydney Rock Oyster (_Saccostrea glomerata_), Queensland Sunshine Oyster (_Saccostrea glomerata_, lineage G) and Blacklip Rock Oyster (_Saccostrea echinata_)   
+
+### Objectives
+
+1. Extract HMW DNA from oyster tissues (mantle) and prepare sequencing libraries using the Rapid Barcoding Sequencing kit v14 (SQK-RBK114.24)  
+2. Sequence the DNA on ONT (P2)  
+3. Align the reads to the Blacklip Oyster reference genome ([GCF_033153115.1](https://www.ncbi.nlm.nih.gov/datasets/genome/GCF_033153115.1/))   
+4. Call variants  
+5. Assess genetic relationship of the samples  
+6. BONUS: Generate full-length genome assemblies for each species  
+
+# Nanopore sequencing of oyster samples
+
+## Analysis Pipeline
+
+### General overview:
+
+1.  Data pre-processing:
+    a.  Reads basecalling (DNA sequences)  
+    b.  Demultiplex reads based on barcodes  
+    c.  Quality check  
+    d.  Adaptor trimming  
+    e.  Post-trim quality check  
+2.  Align the reads to the Blacklip Rock Oyster reference genome ([GCF_033153115.1](https://www.ncbi.nlm.nih.gov/datasets/genome/GCF_033153115.1/))   
+3.  Call variants  
+4.  Summarise genome-wide variations 
+
+**Optional:**
+
+3.  _De Novo_ genome assembly for the three oyster species  
+4.  Taxonomic classification of contigs
+5.  Annotation of genes
+6.  Summary statistics and visualisation
+
+### Methods
+
+#### DNA Extraction
+High molecular DNA was extracted using the CTAB DNA Extraction method for molluscs [@vythalingamCTABDNAExtraction2022] from oyster tissues collected at the Bribie Island Research Centre (BIRC). DNA integrity, purity and quantity were assessed by gel electrophoresis (0.8% agarose), Nanodrop and Qubit, respectively.    
+
+#### Nanopore Sequencing and Basecalling
+The DNA was prepared for long-read Nanopore sequencing by removal of contaminants (Qiagen [DNeasy PowerClean CleanUp Kit](https://www.qiagen.com/us/products/discovery-and-translational-research/dna-rna-purification/dna-purification/microbial-dna/dneasy-powerclean-cleanup-kit)), followed by ligation of sequencing adapters using the Rapid Barcoding Kit 24 V14 (ONT SQK-RBK114.24) for sequencing on an Oxford Nanopore P2 with a FLO-PRO114M flowcell (R10.4.1).   
+ 
+<!-- and short fragments (ONT Short Fragment Eliminator Kit, EXP-SFE001) -->
+
+```{bash setup-conda}
+# download and install conda/mamba
+cd  /scratch/project/adna/tools
+# install to /scratch/project/adna/miniforge3
+wget "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname -m).sh"
+bash Miniforge3-$(uname)-$(uname -m).sh -b -p /scratch/project/adna/miniforge3
+# initialise conda
+source ~/.bashrc
+# add channels and set priorities
+conda config --add channels conda-forge
+conda config --append channels bioconda
+conda config --set auto_stack 1 
+mkdir -p /scratch/project/adna/.conda/envs /scratch/project/adna/.conda/pkgs
+conda config --add envs_dirs /scratch/project_mnt/S0016/tools/miniforge3/envs
+conda config --append envs_dirs $HOME/miniconda3/envs
+conda config --append envs_dirs /scratch/project/adna/.conda/envs
+conda config --add pkg_dirs /scratch/project/adna/.conda/pkgs
+# install extra packages to the base environment
+mamba install -n base libgcc gnutls libuuid readline cmake git tmux libgfortran parallel pip mamba gawk pigz rename genozip autoconf sshpass pbgzip rclone gh
+# setup conda environment for Nanopore data analysis and processing
+JOBNAME="create_ont_env"
+CONDA_NAME="ont"
+echo "mamba create -n $CONDA_NAME seqkit slow5tools samtools numpy pycoqc chopper nanoplot pigz pbgzip kraken2 sambamba biobambam ont-modkit ucsc-bedgraphtobigwig toulligqc clair3 sniffles minimap2 nanofilt porechop fastplong nanoq bcftools snpsift vcftools
+conda activate $CONDA_NAME 
+pip install pod5 pyslow5 # tensorflow[and-cuda]
+conda clean -ay"> $JOBNAME.cmds
+
+sbatch --job-name=$JOBNAME --cpus-per-task=12 --mem=64G --time=5:00:00 --export=ALL,CMDS_FILE=$JOBNAME.cmds,CONDA_NAME=base ~/bin/serial_jobs_run.slurm
+
+```
+
+Basecalling and demultiplexing of reads from the Nanopore sequencing data was performed with [dorado](https://github.com/nanoporetech/dorado) v1.0.2.  
+Nanopore sequencing data was first demultiplexed and then aligned to 
+
+The recommended workflow is as follows:  
+
+1. Basecall and multiplex reads into a pooled `BAM` file with tags identifying the reads classifying each barcode with *dorado* v1.0.2 (convert `fast5` into `pod5` files if needed)  
+2. Generate summary statistics with `dorado summary` and QC (see [this tutorial](https://timkahlke.github.io/LongRead_tutorials/APP_ANS.html#whats-the-name-of-the-configuration-file-guppy-needs-to-basecall-the-tutorial-data))  
+3. Save reads from each sample/barcode to `FASTQ` format with `dorado demux`  
+4. Adaptor and quality trimming of the reads with [_fastplong_](https://github.com/OpenGene/fastplong) (average read quality Q>15, minimum read length >1000 and removal of the first 10 bases). Alternatively use *nanoq* [@steinigNanoqUltrafastQuality2022], *prowler* [@leeProwlerNovelTrimming2021] or *Porechop* with *Nanofilt*  
+5. Align the clean reads to the Blacklip Rock Oyster reference genome ([GCF_033153115.1](https://www.ncbi.nlm.nih.gov/datasets/genome/GCF_033153115.1/)) with *minimap2* (see specific parameters information below)   
+6. Sort and mark duplicates in `BAM` files with *biobambam* v2.0.87 [@tischlerBiobambamToolsRead2014a]   
+7. Call variants with *dorado*/*freebayes*/_**Clair3**_/*miniSNV* [@barbitoffSystematicBenchmarkStateoftheart2022; @cuiMiniSNVAccurateFast2024; @zhengSymphonizingPileupFullalignment2022] 
+8. _De-Novo_ assembly of genomes  
+
+#### Setup tools
+
+```{bash ref-genome}
+CONDA_NAME="genomics"
+mamba install -n $CONDA_NAME ncbi-datasets-cli
+# mamba create -n $CONDA_NAME transrate ncbi-datasets-cli detonate
+WORKDIR='/scratch/project/adna/Oyster_QX_Disease'
+JOBNAME="downlaod_BRO_ref"
+mkdir -p $WORKDIR/references && cd $WORKDIR/references
+echo "datasets download genome accession GCF_033153115.1 --include gff3,rna,cds,protein,genome --filename $WORKDIR/references/GCF_033153115.1.zip
+unzip $WORKDIR/references/GCF_033153115.1.zip
+mv $WORKDIR/references/ncbi_dataset/data/GCF_033153115.1/ $WORKDIR/references/" > $JOBNAME.cmds
+
+sbatch --job-name=$JOBNAME --cpus-per-task=6 --mem=24G --time=5:00:00 --export=ALL,CMDS_FILE=$JOBNAME.cmd,CONDA_NAME=$CONDA_NAME ~/bin/serial_jobs_run.slurm
+```
+
+
+```{bash dorado-setup}
+cd ~/adna/tools # on Bunya
+JOBNAME="install-dorado"
+CONDA_NAME="ont"
+DORADO_VER=1.0.2 # set dorado version
+# download dorado
+echo "aria2c -x5 -c https://cdn.oxfordnanoportal.com/software/analysis/dorado-${DORADO_VER}-linux-x64.tar.gz
+# unzip dorado
+tar xzfv dorado-${DORADO_VER}-linux-x64.tar.gz
+# link dorado to the conda binary folder
+conda activate $CONDA_NAME
+ln -sf ~/adna/tools/dorado-${DORADO_VER}-linux-x64/bin/dorado $CONDA_PREFIX/bin/
+ln -sf ~/adna/tools/dorado-${DORADO_VER}-linux-x64/bin/dorado $HOME/bin/" > $JOBNAME.cmds
+
+sbatch --job-name=$JOBNAME --cpus-per-task=6 --mem=24G --time=5:00:00 --export=ALL,CMDS_FILE=$JOBNAME.cmd,CONDA_NAME=$CONDA_NAME ~/bin/serial_jobs_run.slurm
+```
+
+Download *dorado* models (if needed to be done manually on Gowonda)
+
+``` {bash dorado-models}
+DORADO_VER=1.0.2 # set dorado version
+CONDA_NAME="ont"
+mkdir -p ~/adna/tools/dorado-${DORADO_VER}-linux-x64/dorado_models && cd ~/adna/tools/dorado-${DORADO_VER}-linux-x64/dorado_models
+# manually download and unzip dorado models (see  https://github.com/nanoporetech/dorado/issues/266#issuecomment-1613225513)
+conda activate $CONDA_NAME
+dorado download --list 2>&1 >/dev/null | grep -v "models" | egrep -o "dna_r10.4.1_e8.2_400bps.+v5.2.0$"  | parallel 'aria2c -x5 https://cdn.oxfordnanoportal.com/software/analysis/dorado/{}.zip  && unzip -o {}.zip'
+```
+
+#### Basecalling and demultiplexing
+Basecalling and demultiplexing were performed on the QCIF Bunya HPC (see the [documentation](https://github.com/UQ-RCC/hpc-docs/tree/main)) with *dorado* v1.0.2, using *GNU-parallel* [@Tange2011a] to generate the task commands to run with the `SLURM` scheduler. Note that recent versions of *dorado* employ an automatic model download based on kit detection. 
+
+```{r samplesheet}
+samplesheet <- tibble(barcode=sprintf("barcode%02d", 1:15),
+                      alias=c("SRO_NEB", "BRO_NEB", "QSO_NEB", "QSO_1", 
+                              "QSO_2", "SRO_1", "SRO_2", "BRO_1", "BRO_2", 
+                              paste0("Hybrid_", 1:6))) %>% 
+                mutate(sample_id="oyster_pool") %>% 
+  left_join(read_csv("data/sample_sheet_PAY77920_20250723.csv")) %>% 
+  write_csv("data/barcode_sample_sheet_PAY77920_20250723.csv")
+
+```
+
+
+```{bash dorado-basecall}
+WORKDIR="/scratch/project/adna/Oyster_QX_Disease" # on Bunya/Gowonda
+# WORKDIR=/scratch/project/adna/A_rabiei/
+MINQ=7
+# dna_r10.4.1_e8.2_400bps_sup@v5.0.0
+DORADO_VER=1.0.2 # set dorado version
+DORADO_DIR="/scratch/project/adna/tools/dorado-${DORADO_VER}-linux-x64"
+BASECALL_MODEL="hac sup" # sup
+BARCODE_KIT="SQK-RBK114-24"
+JOBNAME="oyster-pool-basecall-demux"
+POD_DIR="$WORKDIR/ONT_oyster_gDNA_23072025/oyster_pool/20250723_1139_P2S-01837-A_PAY77920_d62bbd29/pod5"
+# GENOME="$HOME/adna/A_rabiei/A_rabiei_TECAN_2022/ref_genome/ArME14_v2_CCDM.fa"
+# Resources
+NCPUS=4
+MEM=36
+WALLTIME="30:00:00"
+GRES="gpu:h100:1" # gpu:nvidia_a100_80gb_pcie_2g.20gb:1 / gpu:a100:1 / gpu:nvidia_a100_80gb_pcie_1g.10gb:1
+GRES="gpu:nvidia_a100_80gb_pcie_3g.40gb:1" 
+CONDA_NAME="ont"
+
+cd $WORKDIR
+
+# copy pod5 files from Sharepoint
+rclone copy -P --include "**/*.pod5" Niki_QX:General/QDAF_diagnostics_work/BIRC_Hybrid_experiment/ONT_oyster_gDNA_23072025 $WORKDIR/ONT_oyster_gDNA_23072025
+# copy sample sheet
+rclone copy -P --include "**/*.csv" Niki_QX:General/QDAF_diagnostics_work/BIRC_Hybrid_experiment/Oyster_hybrids_nanopore_seq/data $WORKDIR/ONT_oyster_gDNA_23072025/metadata
+
+
+# parallel "mkdir -p $WORKDIR/ONT_oyster_gDNA_23072025/oyster_demuxed/{}" ::: $BASECALL_MODEL 
+mkdir -p $WORKDIR/ONT_oyster_gDNA_23072025/basecalling && cd $WORKDIR/ONT_oyster_gDNA_23072025
+# prepare basecalling commands
+# module load cuda
+parallel --dry-run "srun dorado basecaller --models-directory $DORADO_DIR/dorado_models -r -x cuda:0 --min-qscore $MINQ --sample-sheet metadata/barcode_sample_sheet_PAY77920_20250723.csv --no-trim --emit-moves --kit-name $BARCODE_KIT {} $POD_DIR > basecalling/oyster_pool_{}_no_trim.bam && mkdir -p oyster_demuxed/{} && dorado demux -t \$SLURM_CPUS_PER_TASK --sample-sheet metadata/barcode_sample_sheet_PAY77920_20250723.csv --kit-name $BARCODE_KIT --emit-summary --emit-fastq --output-dir oyster_demuxed/{}  $WORKDIR/ONT_oyster_gDNA_23072025/basecalling/oyster_pool_{}_no_trim.bam" ::: $BASECALL_MODEL > $JOBNAME.cmds
+
+# sbatch --job-name=$JOBNAME --cpus-per-task=$NCPUS --mem=${MEM}G --time=$WALLTIME --export=ALL,CMDS_FILE=$JOBNAME.cmds,CONDA_NAME=$CONDA_NAME --gres=$GRES --partition=gpu_cuda --qos=gpu $HOME/bin/serial_jobs_run.slurm 
+
+sbatch -a 1-$(cat $JOBNAME.cmds | wc -l) --job-name=$JOBNAME --cpus-per-task=$NCPUS --mem=${MEM}G --time=$WALLTIME --gres=$GRES --partition=gpu_cuda --qos=gpu --export=ALL,CMDS_FILE=$JOBNAME.cmds,CONDA_NAME=$CONDA_NAME  $HOME/bin/array.slurm 
+
+
+JOBNAME="oyster-demux"
+BASECALL_MODEL="hac sup"
+# GENOME="$HOME/adna/A_rabiei/A_rabiei_TECAN_2022/ref_genome/ArME14_v2_CCDM.fa"
+# Resources
+NCPUS=12
+MEM=32
+WALLTIME="2:00:00"
+
+parallel --dry-run "mkdir -p oyster_demuxed/{} && srun dorado demux -t \$SLURM_CPUS_PER_TASK --sample-sheet barcode_sample_sheet_PAY77920_20250723.csv --kit-name $BARCODE_KIT --emit-summary --emit-fastq --output-dir oyster_demuxed/{} $WORKDIR/ONT_oyster_gDNA_23072025/basecalling/oyster_pool_{}_no_trim.bam" ::: $BASECALL_MODEL > $JOBNAME.cmds
+
+sbatch --job-name=$JOBNAME --cpus-per-task=$NCPUS --mem=${MEM}G --time=$WALLTIME --export=ALL,CMDS_FILE=$JOBNAME.cmds,CONDA_NAME=$CONDA_NAME $HOME/bin/serial_jobs_run.slurm 
+# copy the files to Research Space
+rclone copy -P -L  $WORKDIR/basecalling GURS_shared:GRI2007-001RTX/A_rabiei_WGS/Nanopore_sequencing/rabiei-epi1/basecalling 
+```
+
+#### Align to Reference Genome
+Adaptor trimming of the multiplexed reads was performed after the basecalling with [*fastplong*](https://github.com/OpenGene/fastplong) (average read quality Q>15, minimum read length >300).  
+The quality-trimmed and filtered reads from each sample (stored in an individual `fastq` file) were aligned to the Blacklip Rock Oyster reference genome ([GCF_033153115.1](https://www.ncbi.nlm.nih.gov/datasets/genome/GCF_033153115.1/)) with *minimap2*  v2.30 [@liMinimap2PairwiseAlignment2018; @liNewStrategiesImprove2021]. (or *Winnowmap2*, see @jainLongreadMappingRepetitive2022).  
+Consider using the following parameters to improve alignment to a closely-related species (see [this SO thread](https://bioinformatics.stackexchange.com/a/21623) or the original [issue thread](https://github.com/lh3/minimap2/issues/521#issuecomment-559163919) on GitHub):  
+ - Default (`-x map-ont`): `-k15 -w10 -A2 -B4 -O4,24 -E2,1`  
+ - Reduced mismatch penalty `B`, minimizer window size `w` and kmer size `k`: `-B3 -k10 -w8`) 
+
+```{bash minimap2-align}
+WORKDIR="/scratch/project/adna/Oyster_QX_Disease"
+mkdir -p $WORKDIR/ONT_oyster_gDNA_23072025/logs && cd $WORKDIR/ONT_oyster_gDNA_23072025
+# Nanopore variables
+ADAPTER_SEQ="TTTTTTTTCCTGTACTTCGTTCAGTTACGTATTGCT"
+BASECALL_MODEL="hac sup"
+RGPM="ONT_P2"
+RGPL="ONT"
+RGPU="PAY77920"
+RGCN="GU"
+# Create Minimap2 index
+REFERENCE="$WORKDIR/references/GCF_033153115.1/GCF_033153115.1_CSIRO_AGI_Sech_v1_genomic.fna"
+MMI_INDEX="${REFERENCE%.*}.mmi"
+JOBNAME="minimap2-ref-index"
+# Resources
+NCPUS=2
+MEM=8
+WALLTIME="1:00:00"
+CONDA_NAME="ont"
+
+# create index
+#echo "minimap2 -k10 -w8 -d $MMI_INDEX $REFERENCE" > $JOBNAME.cmds
+#sbatch --job-name=$JOBNAME --cpus-per-task=$NCPUS --mem=${MEM}G --time=$WALLTIME --export=ALL,CMDS_FILE=$JOBNAME.cmds,CONDA_NAME=$CONDA_NAME $HOME/bin/serial_jobs_run.slurm 
+
+# Process BAMs
+JOBNAME="trim-align-sort-bams"
+MMI_OPTS="-B3 -k10 -w8"
+
+# Resources
+NCPUS=12
+MEM=64
+MIN_LEN=300
+MINQ=15
+WALLTIME="3:00:00"
+CONDA_NAME="ont"
+# apptainer pull docker://staphb/minimap2:latest
+find oyster_demuxed -name "*.fastq" | grep -v "_unclassified" | parallel --dry-run --rpl "{model} s:.+\/(.+)\/.+.fastq$:\1:" --rpl "{sample} s:.+\/d62bbd29-df10-4f6a-976b-e85f14864dbc_(.+?).fastq:\1:" "mkdir -p {//}/QC; fastplong --stdout -i {} -m $MINQ -l $MIN_LEN -w \$SLURM_CPUS_PER_TASK -h {//}/QC/{sample}.fastplong.html -j {//}/QC/{sample}.fastplong.json -5 -3 | minimap2 -ax map-ont $MMI_OPTS -t \$SLURM_CPUS_PER_TASK  -Y --MD  -R '@RG\tID:{sample}\tSM:{sample}\tLB:{sample}\tPU:$RGPU\tPL:$RGPL\tPM:$RGPM\tCN:$RGCN' $REFERENCE - | bamsormadup indexfilename={//}/{sample}.mm2$(echo $MMI_OPTS | sed -E 's/\s*\-/_/g')_GCF_033153115.1.sorted.markdup.bam.bai inputformat=sam  tmpfile=\$TMPDIR/bamsormadup_\$(hostname)_\$SLURM_ARRAY_JOB_ID threads=\$SLURM_CPUS_PER_TASK > {//}/{sample}.mm2$(echo $MMI_OPTS | sed -E 's/\s*\-/_/g')_GCF_033153115.1.sorted.markdup.bam"  > $JOBNAME.cmds
+
+# send to the cluster
+sbatch -a 1-$(cat $JOBNAME.cmds | wc -l) --job-name=$JOBNAME --cpus-per-task=$NCPUS --mem=${MEM}G --time=$WALLTIME --export=ALL,CMDS_FILE=$JOBNAME.cmds,CONDA_NAME=$CONDA_NAME  $HOME/bin/array.slurm 
+
+```
+
+### Variant Calling
+#### Variant calling with *dorado*
+
+Small variants (SNPs) were extracted from the `bam` files with *dorado* v1.0.2
+
+```{bash dorado-var}
+# Define variables
+MINDP=7
+# dna_r10.4.1_e8.2_400bps_sup@v5.0.0
+
+# BASECALL_MODEL="hac"
+REFERENCE="$WORKDIR/references/GCF_033153115.1/GCF_033153115.1_CSIRO_AGI_Sech_v1_genomic.fna"
+# Variant call
+JOBNAME="dorado-var"
+# Resources
+NCPUS=12
+MEM=64
+WALLTIME="3:00:00"
+CONDA_NAME="ont"
+mkdir -p $WORKDIR/ONT_oyster_gDNA_23072025/dorado_vars && cd $WORKDIR/ONT_oyster_gDNA_23072025
+# work on file called with multiple modification models (potentially export as BedGraph files) 
+find oyster_demuxed -name "*sorted.markdup.bam" | grep -v "_unclassified" | parallel --rpl "{model} s:.+\/(.+)\/.+.bam$:\1:" --dry-run --rpl "{sample} s:.+\/(.+?).GCF_033153115.1.sorted.markdup.bam:\1:" "dorado variant -x cuda:0 --threads \$SLURM_CPUS_PER_TASK --min-depth $MINDP -o dorado_vars_{model} {} $GENOME > {sample}.vcf" > $JOBNAME.cmds
+# send to the cluster
+sbatch -a 1-$(cat $JOBNAME.cmds | wc -l) --job-name=$JOBNAME --cpus-per-task=$NCPUS --mem=${MEM}G --time=$WALLTIME --export=ALL,CMDS_FILE=$JOBNAME.cmds,CONDA_NAME=$CONDA_NAME  /home/ibar/bin/array.slurm 
+
+# dorado aligner $REFERENCE {} | samtools sort --threads <num_threads> > aligned_reads_to_BRO.bam samtools index aligned_reads_to_BRO.bam
+```
+
+#### Variant calling with *clair3*
+
+Small variants (SNPs) were extracted from the `bam` files with *clair3* v1.1.2
+
+```{bash vars-clair3}
+WORKDIR="/scratch/project/adna/Oyster_QX_Disease" # on Bunya/Gowonda
+# WORKDIR=/scratch/project/adna/A_rabiei/
+MINDP=7
+CONDA_NAME="ont"
+DORADO_VER=1.0.2 # set dorado version
+DORADO_DIR="$HOME/tools/dorado-${DORADO_VER}-linux-x64"
+
+# download clair3 models
+cd ~/tools
+git clone https://github.com/nanoporetech/rerio.git
+# mkdir $DORADO_DIR/clair3_models && cd $DORADO_DIR
+BASECALL_MODEL="hac sup"
+parallel "python3 ~/tools/rerio/download_model.py --clair3 $HOME/tools/rerio/clair3_models/r1041_e82_400bps_{}_v520_model" ::: $BASECALL_MODEL
+
+# MODEL_PATH="$HOME/tools/rerio/clair3_models/${MODEL}"
+REFERENCE="$WORKDIR/references/GCF_033153115.1/GCF_033153115.1_CSIRO_AGI_Sech_v1_genomic.fna"
+conda run -n $CONDA_NAME samtools faidx $REFERENCE
+JOBNAME="clair3-vars"
+# Resources
+NCPUS=8
+MEM=64
+WALLTIME="5:00:00"
+mkdir -p $WORKDIR/ONT_oyster_gDNA_23072025/$JOBNAME && cd $WORKDIR/ONT_oyster_gDNA_23072025
+
+find oyster_demuxed -name "*.GCF_033153115.1.sorted.markdup.bam" | grep -v "_unclassified" | parallel --dry-run --rpl "{model} s:.+\/(.+)\/.+.bam$:\1:" --rpl "{sample} s:.+\/(.+?).GCF_033153115.1.sorted.markdup.bam:\1:" "mkdir -p $JOBNAME_{model}; run_clair3.sh --bam_fn={} --ref_fn=$REFERENCE --threads=\$SLURM_CPUS_PER_TASK --sample_name={sample} --platform=ont --include_all_ctgs  --model_path=$HOME/tools/rerio/clair3_models/r1041_e82_400bps_{model}_v520 --output=$JOBNAME-{model}/{sample} " > $JOBNAME.cmds
+
+# send to the cluster
+sbatch -a 1-$(cat $JOBNAME.cmds | wc -l) --job-name=$JOBNAME --cpus-per-task=$NCPUS --mem=${MEM}G --time=$WALLTIME --export=ALL,CMDS_FILE=$JOBNAME.cmds,CONDA_NAME=$CONDA_NAME  /home/ibar/bin/array.slurm 
+
+# merge variants
+
+JOBNAME="merge-clair3-vars"
+BASECALL_MODEL="hac sup"
+# Resources
+NCPUS=8
+MEM=64
+WALLTIME="2:00:00"
+cd $WORKDIR/ONT_oyster_gDNA_23072025/
+
+# HAC_VCFS=$(find $PWD -name "merge_output.vcf.gz" | grep "hac" | xargs)
+parallel --dry-run "bcftools merge -m all --threads $NCPUS \$(find $PWD -name \"merge_output.vcf.gz\" | grep \"{}\" | xargs) -o clair3-vars-{}/oyster_hybrids_{}.clair3.vcf.gz; bcftools index oyster_hybrids_{}.clair3.vcf.gz" :::  $BASECALL_MODEL >  $JOBNAME.cmds
+
+# send to the cluster
+sbatch -a 1-$(cat $JOBNAME.cmds | wc -l) --job-name=$JOBNAME --cpus-per-task=$NCPUS --mem=${MEM}G --time=$WALLTIME --export=ALL,CMDS_FILE=$JOBNAME.cmds,CONDA_NAME=$CONDA_NAME  /home/ibar/bin/array.slurm 
+
+# find . -name "merge_output.vcf.gz" | grep -v "_unclassified" | parallel --dry-run --rpl "{model} s:.+\/clair3-vars-(.+)\/(.+)\/.vcf.gz$:\1:" --rpl "{sample} s:.+\/clair3-vars-(.+)\/(.+)\/.vcf.gz$:\2:" "run_clair3.sh --bam_fn={} --ref_fn=$REFERENCE --threads=\$SLURM_CPUS_PER_TASK --sample_name={sample} --platform=ont --include_all_ctgs  --model_path=$HOME/tools/rerio/clair3_models/r1041_e82_400bps_{model}_v520 --output=$JOBNAME_{model}_{sample} " > $JOBNAME.cmds
+
+# send to the cluster
+#sbatch -a 1-$(cat $JOBNAME.cmds | wc -l) --job-name=$JOBNAME --cpus-per-task=$NCPUS --mem=${MEM}G --time=$WALLTIME --export=ALL,CMDS_FILE=$JOBNAME.cmds,CONDA_NAME=$CONDA_NAME  /home/ibar/bin/array.slurm 
+
+```
+
+#### Filter variants
+Merged variants were filtered using a combination of commands from *SnpSift* v5.1d [@rudenUsingDrosophilaMelanogaster2012], *BCFtools* v1.17 [@danecekTwelveYearsSAMtools2021; @liStatisticalFrameworkSNP2011] and *VCFtools* v0.1.16 [@danecekVariantCallFormat2011], based on their total loci coverage and quality, keeping only polymorphic SNP loci with a minimum Quality of 10 (`QUAL>10`, based on EDA). In addition, each isolate's genotype call was reset (recoded as missing, or `./.`) if it had read depth (`DP<5`) and another filtering step was performed to remove loci with more than 20% missing calls. Variant statistics were generated by *BCFtools* pre and post filter.
+
+```{bash vcf_filter}
+CONDA_NAME="ont"
+conda activate $CONDA_NAME
+# Recode genotypes as missing if below a certain threshold, such as genotyping quality or depth (GQ:DP)  
+# filter only polymorphic bi-allelic SNPs, using QUAL>30, 7<DP<100000
+
+# filter clair3 variants with SnpSift and vcftools (wipe any genotype with DP<7 with bcftools)
+RUN_DIR=$WORKDIR/ONT_oyster_gDNA_23072025
+QUAL=30 # 30
+# MQ=30
+CALL_RATE=0.8 # Note that this re
+MAX_DP=100000
+MIN_DP=10
+IND_DP=7
+JOBNAME="clair3-var-filter"
+
+find $RUN_DIR -name "oyster_hybrids_hac.clair3.vcf.gz" | parallel --dry-run --rpl "{base} s:.vcf.gz$::"  "bcftools filter -S . -e \"FMT/DP<$IND_DP\" {} -O v | SnpSift filter \"( QUAL>=$QUAL ) & ( countRef()>=1 & countVariant()>=1 )\" | bgzip -@ \$SLURM_CPUS_PER_TASK -c > {base}.Q$QUAL.DP$IND_DP.poly.recode.vcf.gz 
+vcftools --gzvcf {base}.Q$QUAL.DP$IND_DP.poly.recode.vcf.gz --recode --max-missing $CALL_RATE --recode-INFO-all --minQ $QUAL --remove-indels -c | bgzip -@ \$SLURM_CPUS_PER_TASK -c > {base}.snps.Q$QUAL.DP$IND_DP.CR$CALL_RATE.poly.recode.vcf.gz 
+vcftools --gzvcf {base}.Q$QUAL.DP$IND_DP.poly.recode.vcf.gz --recode --max-missing $CALL_RATE --recode-INFO-all --minQ $QUAL --keep-only-indels -c | bgzip -@ \$SLURM_CPUS_PER_TASK -c > {base}.indels.Q$QUAL.DP$IND_DP.CR$CALL_RATE.poly.recode.vcf.gz "> $RUN_DIR/$JOBNAME.cmds
+
+NCORES=6
+MEM=32
+WALLTIME="1:00:00"
+JOB_ID=$(sbatch -a 1-$(cat $JOBNAME.cmds | wc -l) --job-name=$JOBNAME --cpus-per-task=$NCPUS --mem=${MEM}G --time=$WALLTIME --export=ALL,CMDS_FILE=$JOBNAME.cmds,CONDA_NAME=$CONDA_NAME  /home/ibar/bin/array.slurm  | cut -f 4 -d " ")
+
+#bcftools filter -S . -e "GT=='het' | FMT/DP<$MIN_DP" A_rabiei_2024_Murdoch_WGRS_ArME14_v2.bwa2.fb.diploid.vcf.gz -O v | SnpSift filter "( QUAL>=$QUAL ) & ( DP<=$MAX_DP ) & ( DP>=$MIN_DP ) & ( countRef()>=1 & countVariant()>=1 )" | vcftools --vcf - --recode --recode-INFO-all --minQ $QUAL --max-missing 0.75 --remove-indels -c | bgzip -o A_rabiei_2024_Murdoch_WGRS_ArME14_v2.bwa2.fb.diploid.Q$QUAL.GT75.noRep.noHet.poly.recode.vcf.gz && tabix A_rabiei_2024_Murdoch_WGRS_ArME14_v2.bwa2.fb.diploid.Q$QUAL.GT75.noRep.noHet.poly.recode.vcf.gz
+# generate stats 
+JOBNAME="bcftools_stats"
+WALLTIME=2:00:00
+MEM=32
+NCORES=8
+find . -name "oyster_hybrids_hac.clair3*vcf.gz" | parallel --dry-run "bcftools stats -s - {} > {.}.bcfstats.txt" > $JOBNAME.cmds
+# send to the cluster
+sbatch --job-name=$JOBNAME --cpus-per-task=$NCORES --mem=${MEM}G --time=$WALLTIME --export=ALL,CMDS_FILE=$RUN_DIR/$JOBNAME.cmds,CONDA_NAME=$CONDA_NAME ~/bin/parallel_jobs_run.slurm 
+```
+
+
+### QC
+QC analysis of the sequencing runs was performed with [toulligQC](https://github.com/GenomiqueENS/toulligQC) v2.7.1.
+
+```{bash ont-qc}
+
+# Docker container from genomicpariscentre/toulligqc:latest
+
+WORKDIR="$HOME/adna/A_rabiei/rabiei-epi1" # on Bunya/Gowonda
+# QC
+JOBNAME="toulligqc-oyster"
+# Resources
+NCPUS=12
+MEM=64
+WALLTIME="0:30:00"
+CONDA_NAME="ont"
+
+find $WORKDIR/basecalling -name "barcode*" -type d | sort | parallel --dry-run "toulligqc --thread \$SLURM_CPUS_PER_TASK  --report-name rabiei-epi1-{/.} -o {}/toulligqc-{/.}.html -u {}/{/.}_basecalled_reads_Q7.sorted.markdup.bam -p $WORKDIR/pod5/{/.}" > $JOBNAME.cmds
+
+# send to the cluster
+sbatch -a 1-$(cat $JOBNAME.cmds | wc -l)%10 --job-name=$JOBNAME --cpus-per-task=$NCPUS --mem=${MEM}G --time=$WALLTIME --export=ALL,CMDS_FILE=$JOBNAME.cmds,CONDA_NAME=$CONDA_NAME  /home/ibar/aDNA/A_rabiei/array.slurm 
+
+
+# copy the files to Research Space
+rclone copy -P --exclude "**/*.html"  $WORKDIR/ONT_oyster_gDNA_23072025 Niki_QX:General/QDAF_diagnostics_work/BIRC_Hybrid_experiment/ONT_oyster_gDNA_23072025
+
+rclone copy -P --ignore-checksum --ignore-size --include "**/*.html"  $WORKDIR/ONT_oyster_gDNA_23072025 Niki_QX:General/QDAF_diagnostics_work/BIRC_Hybrid_experiment/ONT_oyster_gDNA_23072025
+
+```
+
+
+
+### Summarise and visualise genome-wide variants
+Additional interactive filtration was performed in R, using *SNPfiltR* v`r packageVersion("SNPfiltR")` [@deraadSnpfiltrPackageInteractive2022] and *vcfR* v`r packageVersion("vcfR")` [@knausVcfrPackageManipulate2017] packages to iteratively filter our SNP dataset based on various quality and completeness metrics.
+
+```{r var-filter}
+analysis_pkgs <- c("tidyverse", "openxlsx", "furrr", "progressr", "tictoc", "scales",
+                   "glue",'plotly', 'readxl',# general packages
+                   "paletteer", "viridis",
+                   "vcfR","adegenet", "seqinr", "poppr", "mmod", "hierfstat",
+                   "treemap", "ape", "DevonDeRaad/SNPfiltR", # pop gen packages
+                   'geneHapR','pegas', 'dplyr')
+
+#pak::pak(analysis_pkgs)
+
+pacman::p_load(char = basename(analysis_pkgs), update = FALSE, install = FALSE)
+
+#Read vcf file
+#Filtered: no heterozygotes; quality > 30; bi-allelic polymorphic; SNPs only
+vcf <- read.vcfR('data/oyster_hybrids_hac.clair3.snps.Q30.DP7.CR0.8.poly.recode.vcf.gz')
+
+# head(vcf)
+vcf_samples <- colnames(vcf@gt)[-1]
+popmap <- tibble(
+  id = vcf_samples,
+  pop = sub("_.+$", "", vcf_samples)
+)
+
+# filter SNPs
+vcf_filt <- hard_filter(vcfR=vcf, depth = 7, gq = 20) %>% 
+            missing_by_sample(., cutoff = 0.3) %>% 
+            missing_by_snp(., cutoff = 0.7) # %>% 
+            # filter_biallelic(.) %>% 
+            # min_mac(., min.mac = 1) 
+            
+# filter popmap  
+vcf_sample_ids <- colnames(vcf_filt@gt)[-1]
+filtered_popmap <- popmap[popmap$id %in% vcf_sample_ids, ]
+# convert to genind
+genind_vcf <- vcfR2genind(vcf_filt, return.alleles = TRUE)
+# select informative loci
+gen.vcf.inform <- informloci(genind_vcf, quiet = TRUE)
+#2159 uninformative loci at 5%
+inform_loci <- locNames(gen.vcf.inform)
+# filtered_vcf <- vcf_filt
+# filtered_vcf@fix 
+
+keep_loci <- vcf_filt@fix %>% as_tibble() %>% 
+  mutate(lociname = paste(sub(".", "_", CHROM, fixed = TRUE),POS,sep = "_")) %>% 
+  pull(lociname) %in% inform_loci
+# table(keep_loci)
+# filter vcf again
+filtered_vcf <- vcf_filt[keep_loci,]
+
+# write to VCF
+write.vcf(filtered_vcf, "output/Oyster_hybrids_filtered_vcf_informloci.vcf.gz")
+```
+
+
+The filtered SNPs were converted to a `genind` format for principal component analysis (PCA) using *adegenet* v`r packageVersion("adegenet")` and were visualised using *ggplot2* v`r packageVersion("ggplot2")` and *paletteer* v`r packageVersion("paletteer")`
+
+```{r pca, eval=TRUE}
+#PCA
+#Convert to a genind object
+filtered_vcf <- read.vcfR("output/Oyster_hybrids_filtered_vcf_informloci.vcf.gz")
+vcf_samples <- colnames(filtered_vcf@gt)[-1]
+popmap <- tibble(
+  id = vcf_samples,
+  pop = sub("_.+$", "", vcf_samples)
+)
+gen <- vcfR2genind(filtered_vcf)
+allelfreq <- scaleGen(gen, NA.method="mean", scale=TRUE)
+
+pca <- dudi.pca(allelfreq, scale = FALSE, scannf = FALSE, nf = 10)
+
+#need the coordinated that each isolate exist on
+# genind_df <- data.frame(id = indNames(gen))
+
+pcadata <- pca$li %>% rownames_to_column('id') %>% 
+           left_join(popmap)
+# calculate variance explained by PCs
+pcavar <- pca$li %>% summarise(across(starts_with('Axis'), var))
+percent_var <- pcavar/sum(pcavar)
+# plot PCA
+pop_levels <- length(unique(pcadata$pop))
+# sample_levels <- 
+ggplot(pcadata, aes(x= Axis1, y= Axis2, colour = pop)) + geom_point(size = 4) +  scale_colour_paletteer_d("awtools::mpalette") + 
+  geom_hline(yintercept = 0) + geom_vline(xintercept = 0) +
+  labs(colour = "Pop", x= glue("C1: {percent(percent_var$Axis1)}"),
+       y= glue("C2: {percent(percent_var$Axis2)}")) +
+  theme_bw(14)
+```
+
+
+------------------------------------------------------------------------
+
+## General information
+
+This document was last updated at `r Sys.time()` using R Markdown (built with `r R.version.string`). The source code for this webpage can be found at <https://github.com/IdoBar/Oyster_hybrids_nanopore_seq> (or via the GitHub logo at the top right corner of this page).    
+
+Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. It is especially powerful at authoring documents and reports which include code and can execute code and use the results in the output. For more details on using R Markdown see <http://rmarkdown.rstudio.com>, [R Markdown: The Definitive Guide](https://bookdown.org/yihui/rmarkdown/) and [Rmarkdown cheatsheet](https://rstudio.github.io/cheatsheets/html/rmarkdown.html).
+
+# Bibliography
+
+
